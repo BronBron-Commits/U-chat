@@ -39,7 +39,13 @@ prompts = [
     "Unhidra CLI. No delays. Terminal, front and center."
 ]
 
-samplerate = 16000
+# === Sample rate detection ===
+try:
+    samplerate = int(sd.query_devices(kind='input')["default_samplerate"])
+except Exception:
+    samplerate = 16000  # fallback
+    print(f"{RED}⚠ Could not detect default input sample rate, using fallback: 16000 Hz{RESET}")
+
 duration = 3
 model = SpeakerRecognition.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", savedir="tmp_spkrec")
 embeddings = []
