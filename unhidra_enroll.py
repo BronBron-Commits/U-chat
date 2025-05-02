@@ -6,6 +6,7 @@ from speechbrain.inference.speaker import SpeakerRecognition
 import sounddevice as sd
 import webrtcvad
 import collections
+import matplotlib.pyplot as plt
 
 # === Terminal formatting ===
 RED = '\033[91m'
@@ -28,7 +29,7 @@ samplerate = find_working_samplerate()
 print(f"{CYAN}🎚 Using input sample rate: {samplerate}{RESET}")
 
 # === Voice-activity-based recording ===
-def record_until_silence(sample_rate=48000, frame_duration_ms=30, max_record_sec=10, silence_sec=0.8):
+def record_until_silence(sample_rate=48000, frame_duration_ms=30, max_record_sec=10, silence_sec=1.5):
     vad = webrtcvad.Vad(2)
     frame_size = int(sample_rate * frame_duration_ms / 1000)
     num_padding_frames = int(silence_sec * 1000 / frame_duration_ms)
@@ -36,6 +37,17 @@ def record_until_silence(sample_rate=48000, frame_duration_ms=30, max_record_sec
     recording = []
     triggered = False
     stream = sd.InputStream(samplerate=sample_rate, channels=1, dtype="int16", blocksize=frame_size)
+
+    # Setup plot for audio level feedback
+    plt.ion()  # Turn interactive mode on
+    fig, ax = plt.subplots(figsize=(10, 2))
+    x = np.arange(0, 100, 1)
+    y = np.zeros(100)
+    line, = ax.plot(x, y, color='green')
+    ax.set_ylim(0, 255)
+    ax.set_title('Microphone Input Level')
+    ax.set_xlabel('Time')
+    ax.set_ylabel('Volume')
 
     with stream:
         print(f"{CYAN}   🎤 Speak now (recording stops after {silence_sec}s of silence)...{RESET}")
@@ -45,6 +57,18 @@ def record_until_silence(sample_rate=48000, frame_duration_ms=30, max_record_sec
             if len(raw) < 640:
                 continue
             is_speech = vad.is_speech(raw, sample_rate)
+
+            # Calculate volume level for visual feedback
+            volume_norm = np.linalg.norm(np.frombuffer(raw, dtype='int16')) / frame_size
+            y = np.roll(y, -1)
+            y[-1] = volume_norm * 255  # Scale to 0-255 for display
+
+            # Update plot
+            line.set_ydata(y)
+            fig.canvas.draw()
+            fig.canvas.flush_events()
+
+            # If speech detected
             if not triggered:
                 ring_buffer.append((raw, is_speech))
                 if sum(1 for _, speech in ring_buffer if speech) > 0.9 * num_padding_frames:
@@ -60,6 +84,9 @@ def record_until_silence(sample_rate=48000, frame_duration_ms=30, max_record_sec
             if len(recording) * frame_duration_ms > max_record_sec * 1000:
                 print(f"{YELLOW}   ⏱ Max recording duration reached.{RESET}")
                 break
+
+    plt.ioff()  # Turn interactive mode off
+    plt.show()  # Keep the plot open after recording ends
     return np.concatenate(recording)
 
 # === Script ===
