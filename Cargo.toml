@@ -18,6 +18,7 @@ members = [
 ]
 
 exclude = [
+    "startup-check",
     "unhidra-snapshot-gui",
     "unhidra-snapshots",
     "unhidra-vcs-gui",
