@@ -49,15 +49,13 @@ async fn ws_handler(
 ) -> Response {
     let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "supersecret".into());
 
-    // FIXED VALIDATION RULES
+    // VALIDATION FOR jsonwebtoken 7.x–8.x
     let mut validation = Validation::default();
-    validation.validate_aud = false;
-    validation.validate_iss = false;
-    validation.validate_exp = true;      // keep expiration check
-    validation.validate_sub = false;
-    validation.validate_iat = false;
-    validation.validate_nbf = false;
-    validation.required_spec_claims.clear(); // no required standard claims
+    validation.leeway = 300;
+    validation.validate_exp = true;  // allow expiration checking
+    validation.iss = None;          // DISABLE issuer check
+    validation.sub = None;          // DISABLE subject check
+    validation.aud = None;          // DISABLE audience check
 
     let token_check = decode::<serde_json::Value>(
         &query.token,
