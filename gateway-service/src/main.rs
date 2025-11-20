@@ -49,9 +49,15 @@ async fn ws_handler(
 ) -> Response {
     let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "supersecret".into());
 
+    // FIXED VALIDATION RULES
     let mut validation = Validation::default();
     validation.validate_aud = false;
-    validation.leeway = 300; // Allow ±5 minutes clock skew
+    validation.validate_iss = false;
+    validation.validate_exp = true;      // keep expiration check
+    validation.validate_sub = false;
+    validation.validate_iat = false;
+    validation.validate_nbf = false;
+    validation.required_spec_claims.clear(); // no required standard claims
 
     let token_check = decode::<serde_json::Value>(
         &query.token,
