@@ -1,38 +1,28 @@
 #!/usr/bin/env bash
 
-SESSION="unhidra-ms"
+# Kill any leftover processes
+pkill -f "auth-api|gateway-service|chat-service|presence-service|history-service|bot-service" 2>/dev/null
 
-tmux has-session -t $SESSION 2>/dev/null
-if [ $? -eq 0 ]; then
-    echo "Killing existing session $SESSION..."
-    tmux kill-session -t $SESSION
-fi
+# Export the shared JWT secret
+export JWT_SECRET="supersecret"
 
-echo "Starting new tmux session: $SESSION"
+# Go to project dir
+cd ~/unhidra-rust
 
-# GATEWAY
-tmux new-session -d -s $SESSION -n gateway
-tmux send-keys -t $SESSION:0 "cd ~/unhidra-rust/gateway-service && cargo run" C-m
+# Create a logs directory if missing
+mkdir -p logs
 
-# AUTH-API (REAL LOGIN SERVER)
-tmux new-window -t $SESSION -n auth-api
-tmux send-keys -t $SESSION:1 "cd ~/unhidra-rust/auth-api && cargo run" C-m
+echo "Starting UNHIDRA stack..."
 
-# CHAT
-tmux new-window -t $SESSION -n chat
-tmux send-keys -t $SESSION:2 "cd ~/unhidra-rust/chat-service && cargo run" C-m
+# Launch each service silently in background
+./target/release/auth-api          > logs/auth.log       2>&1 &
+./target/release/gateway-service   > logs/gateway.log    2>&1 &
+./target/release/chat-service      > logs/chat.log       2>&1 &
+./target/release/presence-service  > logs/presence.log   2>&1 &
+./target/release/history-service   > logs/history.log    2>&1 &
+./target/release/bot-service       > logs/bot.log        2>&1 &
 
-# HISTORY
-tmux new-window -t $SESSION -n history
-tmux send-keys -t $SESSION:3 "cd ~/unhidra-rust/history-service && cargo run" C-m
+sleep 1
 
-# PRESENCE
-tmux new-window -t $SESSION -n presence
-tmux send-keys -t $SESSION:4 "cd ~/unhidra-rust/presence-service && cargo run" C-m
-
-# BOT
-tmux new-window -t $SESSION -n bot
-tmux send-keys -t $SESSION:5 "cd ~/unhidra-rust/bot-service && cargo run" C-m
-
-echo "All microservices launched."
-echo "Attach with:   tmux attach -t $SESSION"
+echo "All services launched."
+echo "Use 'tail -f logs/<file>.log' to view output."
