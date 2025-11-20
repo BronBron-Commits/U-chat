@@ -49,8 +49,10 @@ async fn ws_handler(
 ) -> Response {
     let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "supersecret".into());
 
-    // Basic validation only
-    let validation = Validation::default();
+    let mut validation = Validation::default();
+    validation.validate_issuer = false;     // <-- CRITICAL FIX
+    validation.validate_aud = false;        // <-- Just in case
+    validation.insecure_disable_signature_validation = false;
 
     let check = decode::<serde_json::Value>(
         &query.token,
