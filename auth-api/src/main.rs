@@ -1,40 +1,25 @@
-use axum::{Router, routing::post};
-use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
-use tower_http::cors::CorsLayer;
+use axum::{Router, routing::post, routing::get, Json};
+use serde_json::json;
 
-mod handlers;
-use handlers::{login_handler, AppState};
+async fn login_handler() -> &'static str {
+    "login placeholder"
+}
+
+async fn health_handler() -> Json<serde_json::Value> {
+    Json(json!({"status": "ok"}))
+}
 
 #[tokio::main]
 async fn main() {
-    println!("AUTH-API: Attempting to open DB at /opt/unhidra/auth.db");
-
-    let conn = match Connection::open("/opt/unhidra/auth.db") {
-        Ok(c) => {
-            println!("AUTH-API: Successfully opened /opt/unhidra/auth.db");
-            c
-        }
-        Err(e) => {
-            println!("AUTH-API: FAILED to open /opt/unhidra/auth.db: {}", e);
-            panic!("Cannot open DB");
-        }
-    };
-
-    let shared = Arc::new(AppState {
-        db: Mutex::new(conn),
-    });
-
     let app = Router::new()
         .route("/login", post(login_handler))
-        .layer(CorsLayer::permissive())
-        .with_state(shared);
+        .route("/health", get(health_handler));
 
-    println!("Auth API running on 0.0.0.0:9200");
+    let addr = "0.0.0.0:9200".parse().unwrap();
+    println!("Auth API running on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9200")
+    axum::Server::bind(&addr)
+        .serve(app.into_make_service())
         .await
         .unwrap();
-
-    axum::serve(listener, app).await.unwrap();
 }
