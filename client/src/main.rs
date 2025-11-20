@@ -1,20 +1,50 @@
-use reqwest::Client;
-use tokio;
+use tokio::io::{self, AsyncBufReadExt};
+use tokio::task;
+use tokio_tungstenite::connect_async;
+use futures_util::{SinkExt, StreamExt};
 
 #[tokio::main]
 async fn main() {
-    let api = "http://127.0.0.1:9200/health"; // Auth API
-    let ws = "ws://127.0.0.1:9000/ws";        // Gateway
+    println!("Connecting to ws://127.0.0.1:9000/ws ...");
 
-    println!("Testing Auth API...");
-    let res = Client::new()
-        .get(api)
-        .send()
+    let (ws_stream, _) = connect_async("ws://127.0.0.1:9000/ws")
         .await
-        .unwrap();
-    println!("Auth API status: {}", res.status());
+        .expect("Failed to connect");
 
-    println!("Connecting to gateway: {}", ws);
-    // For now we just print, since gateway needs websocket handshake
-    println!("(placeholder: WebSocket connect goes here)");
+    println!("Connected.");
+
+    let (mut write, mut read) = ws_stream.split();
+
+    // Task: incoming message handler
+    let recv_task = task::spawn(async move {
+        while let Some(msg) = read.next().await {
+            match msg {
+                Ok(m) => println!("<< {}", m),
+                Err(e) => {
+                    println!("WebSocket read error: {e}");
+                    break;
+                }
+            }
+        }
+    });
+
+    // Task: user input -> WebSocket
+    let send_task = task::spawn(async move {
+        let mut stdin = io::BufReader::new(io::stdin()).lines();
+
+        while let Ok(Some(line)) = stdin.next_line().await {
+            if write.send(line.into()).await.is_err() {
+                println!("WebSocket closed.");
+                break;
+            }
+        }
+    });
+
+    // Wait for either task to finish
+    tokio::select! {
+        _ = recv_task => (),
+        _ = send_task => (),
+    }
+
+    println!("Client exited.");
 }
