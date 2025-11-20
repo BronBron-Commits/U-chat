@@ -51,8 +51,7 @@ async fn ws_handler(
 
     let mut validation = Validation::default();
     validation.validate_aud = false;
-    validation.set_required_spec_claims(&[]);
-    validation.leeway = 300; // <-- FIX: allow ±5 minutes clock difference
+    validation.leeway = 300; // Allow ±5 minutes clock skew
 
     let token_check = decode::<serde_json::Value>(
         &query.token,
