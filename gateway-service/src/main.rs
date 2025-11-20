@@ -3,7 +3,7 @@ use axum::{
         ws::{Message, WebSocket},
         Query, State, WebSocketUpgrade,
     },
-    response::{IntoResponse, Html},
+    response::{IntoResponse, Html, Response},
     routing::get,
     Router,
 };
@@ -47,15 +47,16 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(WsQuery { token }): Query<WsQuery>,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+) -> Response {
     let validation = Validation::default();
     let key = DecodingKey::from_secret(b"secret");
 
     if decode::<serde_json::Value>(&token, &key, &validation).is_err() {
-        return Html("INVALID TOKEN");
+        return Html("INVALID TOKEN").into_response();
     }
 
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
