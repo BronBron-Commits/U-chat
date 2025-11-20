@@ -3,7 +3,7 @@ use axum::{
         ws::{Message, WebSocket},
         Query, State, WebSocketUpgrade,
     },
-    response::IntoResponse,
+    response::{IntoResponse, Html},
     routing::get,
     Router,
 };
@@ -48,14 +48,11 @@ async fn ws_handler(
     Query(WsQuery { token }): Query<WsQuery>,
     State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    // Validate JWT
     let validation = Validation::default();
     let key = DecodingKey::from_secret(b"secret");
 
-    let result = decode::<serde_json::Value>(&token, &key, &validation);
-
-    if result.is_err() {
-        return axum::response::Html("INVALID TOKEN");
+    if decode::<serde_json::Value>(&token, &key, &validation).is_err() {
+        return Html("INVALID TOKEN");
     }
 
     ws.on_upgrade(move |socket| handle_socket(socket, state))
@@ -65,14 +62,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut write, mut read) = socket.split();
     let mut rx = state.tx.subscribe();
 
-    // TASK: Read messages → broadcast to all
-    let recv_task = tokio::spawn(async move {
-        while let Some(Ok(Message::Text(text))) = read.next().await {
-            let _ = state.tx.send(text);
-        }
-    });
-
-    // TASK: Broadcast → send to this client
     let send_task = tokio::spawn(async move {
         while let Ok(msg) = rx.recv().await {
             if write.send(Message::Text(msg)).await.is_err() {
@@ -81,8 +70,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(Message::Text(text))) = read.next().await {
+            let _ = state.tx.send(text);
+        }
+    });
+
     tokio::select! {
-        _ = recv_task => {},
-        _ = send_task => {},
+        _ = send_task => (),
+        _ = recv_task => (),
     }
 }
