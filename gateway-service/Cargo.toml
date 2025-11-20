@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.48", features = ["full"] }
-axum = { version = "0.8.7", features = ["ws"] }
-reqwest = { version = "0.12", features = ["json", "gzip", "brotli"] }
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-proto = { path = "../proto" }
-futures-util = "0.3.31"
+jsonwebtoken = "9.3"
+uuid = "1.8"
+futures-util = "0.3"
