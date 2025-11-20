@@ -49,24 +49,31 @@ async fn ws_handler(
 ) -> Response {
     let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "supersecret".into());
 
-    // Correct Validation for jsonwebtoken 9.x
-    let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
-    validation.validate_exp = true;
-    validation.required_spec_claims.clear();   // <-- KEY FIX
+    println!("--- Incoming WS Connection ---");
+    println!("Token received: {}", query.token);
+    println!("Using secret: {}", secret);
 
-    let check = decode::<serde_json::Value>(
+    let mut validation = Validation::default();
+    validation.validate_aud = false;
+
+    let token_check = decode::<serde_json::Value>(
         &query.token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &validation,
     );
 
-    if check.is_err() {
-        return (StatusCode::UNAUTHORIZED, "INVALID TOKEN").into_response();
+    match token_check {
+        Ok(_) => {
+            println!("JWT OK → Upgrading WebSocket");
+            ws.on_upgrade(move |socket| async move {
+                handle_socket(socket, state).await;
+            })
+        }
+        Err(e) => {
+            println!("JWT ERROR: {:?}", e);
+            (StatusCode::UNAUTHORIZED, "INVALID TOKEN").into_response()
+        }
     }
-
-    ws.on_upgrade(move |socket| async move {
-        handle_socket(socket, state).await;
-    })
 }
 
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
