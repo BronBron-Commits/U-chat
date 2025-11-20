@@ -1,50 +1,54 @@
-use tokio::io::{self, AsyncBufReadExt};
-use tokio::task;
+use reqwest::Client;
+use serde::{Serialize, Deserialize};
 use tokio_tungstenite::connect_async;
-use futures_util::{SinkExt, StreamExt};
+use tungstenite::Message;
+
+#[derive(Serialize)]
+struct LoginReq {
+    username: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct LoginResp {
+    token: String,
+}
 
 #[tokio::main]
 async fn main() {
-    println!("Connecting to ws://127.0.0.1:9000/ws ...");
+    let http = Client::new();
 
-    let (ws_stream, _) = connect_async("ws://127.0.0.1:9000/ws")
+    println!("Logging in to Auth API...");
+    let resp = http.post("http://127.0.0.1:9200/login")
+        .json(&LoginReq {
+            username: "user".into(),
+            password: "password".into(),
+        })
+        .send()
         .await
-        .expect("Failed to connect");
+        .unwrap()
+        .json::<LoginResp>()
+        .await
+        .unwrap();
 
-    println!("Connected.");
+    println!("TOKEN = {}", resp.token);
 
+    let ws_url = format!("ws://127.0.0.1:9000/ws?token={}", resp.token);
+    println!("Connecting to {}", ws_url);
+
+    let (ws_stream, _) = connect_async(ws_url).await.unwrap();
     let (mut write, mut read) = ws_stream.split();
 
-    // Task: incoming message handler
-    let recv_task = task::spawn(async move {
+    tokio::spawn(async move {
         while let Some(msg) = read.next().await {
-            match msg {
-                Ok(m) => println!("<< {}", m),
-                Err(e) => {
-                    println!("WebSocket read error: {e}");
-                    break;
-                }
-            }
+            println!("WS RECEIVED: {:?}", msg);
         }
     });
 
-    // Task: user input -> WebSocket
-    let send_task = task::spawn(async move {
-        let mut stdin = io::BufReader::new(io::stdin()).lines();
+    write.send(Message::Text("{\"msg\":\"hello world\"}".into()))
+        .await
+        .unwrap();
 
-        while let Ok(Some(line)) = stdin.next_line().await {
-            if write.send(line.into()).await.is_err() {
-                println!("WebSocket closed.");
-                break;
-            }
-        }
-    });
-
-    // Wait for either task to finish
-    tokio::select! {
-        _ = recv_task => (),
-        _ = send_task => (),
-    }
-
-    println!("Client exited.");
+    println!("Client finished sending message.");
+    loop { tokio::time::sleep(std::time::Duration::from_secs(1)).await; }
 }
