@@ -45,6 +45,7 @@ async fn ws_handler(
     Query(query): Query<WsQuery>,
     State(app): State<Arc<AppState>>,
 ) -> impl IntoResponse {
+
     let valid = decode::<serde_json::Value>(
         &query.token,
         &DecodingKey::from_secret(b"secret"),
@@ -53,10 +54,10 @@ async fn ws_handler(
     .is_ok();
 
     if !valid {
-        return axum::response::Html("INVALID TOKEN");
+        return axum::response::Html("INVALID TOKEN").into_response();
     }
 
-    ws.on_upgrade(|socket| handle_socket(socket, app))
+    ws.on_upgrade(move |socket| handle_socket(socket, app)).into_response()
 }
 
 async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
