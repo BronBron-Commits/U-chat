@@ -10,7 +10,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{decode, DecodingKey, Validation};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -22,6 +22,12 @@ struct AppState {
 #[derive(Deserialize)]
 struct WsQuery {
     token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,
+    exp: usize,
 }
 
 #[tokio::main]
@@ -48,15 +54,17 @@ async fn ws_handler(
     Query(query): Query<WsQuery>,
 ) -> Response {
     let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "supersecret".into());
+
     let validation = Validation::default();
 
-    let token_check = decode::<serde_json::Value>(
+    let token_check = decode::<Claims>(
         &query.token,
         &DecodingKey::from_secret(secret.as_bytes()),
         &validation,
     );
 
-    if token_check.is_err() {
+    if let Err(e) = token_check {
+        eprintln!("TOKEN ERROR: {:?}", e);
         return (StatusCode::UNAUTHORIZED, "INVALID TOKEN").into_response();
     }
 
