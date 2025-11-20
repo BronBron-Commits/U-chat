@@ -1,27 +1,23 @@
 use axum::{
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::ws::{Message, WebSocket, WebSocketUpgrade, Utf8Bytes},
     extract::ConnectInfo,
     routing::get,
     Router,
 };
-use std::{net::SocketAddr};
+use futures_util::{SinkExt, StreamExt};
+use std::{collections::HashMap, net::SocketAddr, sync::{Arc, Mutex}};
 use tokio::sync::broadcast;
 
 #[tokio::main]
 async fn main() {
-    // Broadcast channel to send messages between clients
-    let (tx, _rx) = broadcast::channel::<String>(100);
+    let state = Arc::new(Mutex::new(HashMap::<SocketAddr, broadcast::Sender<String>>::new()));
 
-    // Build Axum application
-    let app = Router::new()
-        .route("/ws", get(ws_handler))
-        .with_state(tx.clone());
+    let app = Router::new().route("/ws", get(ws_handler.with_state(state.clone())));
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
-    println!("Gateway WebSocket running on ws://{}", addr);
+    println!("Gateway running on 0.0.0.0:9000");
 
     axum::serve(
-        tokio::net::TcpListener::bind(addr).await.unwrap(),
+        tokio::net::TcpListener::bind("0.0.0.0:9000").await.unwrap(),
         app,
     )
     .await
@@ -31,37 +27,39 @@ async fn main() {
 async fn ws_handler(
     ws: WebSocketUpgrade,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    tx: axum::extract::State<broadcast::Sender<String>>,
-) -> axum::response::Response {
-    println!("Client connected: {}", addr);
-    ws.on_upgrade(move |socket| handle_socket(socket, tx.0))
+    state: axum::extract::State<Arc<Mutex<HashMap<SocketAddr, broadcast::Sender<String>>>>>,
+) -> impl axum::response::IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, addr, state))
 }
 
 async fn handle_socket(
-    mut socket: WebSocket,
-    tx: broadcast::Sender<String>,
+    socket: WebSocket,
+    addr: SocketAddr,
+    state: axum::extract::State<Arc<Mutex<HashMap<SocketAddr, broadcast::Sender<String>>>>>,
 ) {
-    // each socket gets a receiver handle
+    let (mut sender, mut receiver) = socket.split();
+
+    let (tx, _rx) = broadcast::channel::<String>(100);
+
+    state.lock().unwrap().insert(addr, tx.clone());
+
+    // Incoming loop (from WebSocket)
+    let tx_clone = tx.clone();
+    tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            if let Message::Text(text_bytes) = msg {
+                let text: String = text_bytes.to_string();
+
+                let _ = tx_clone.send(text.clone());
+            }
+        }
+    });
+
+    // Outgoing loop (broadcast -> WebSocket)
     let mut rx = tx.subscribe();
-
-    let mut send_task = tokio::spawn(async move {
+    tokio::spawn(async move {
         while let Ok(msg) = rx.recv().await {
-            if socket.send(Message::Text(msg)).await.is_err() {
-                break;
-            }
+            let _ = sender.send(Message::Text(msg.into())).await;
         }
     });
-
-    let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = socket.recv().await {
-            if let Message::Text(text) = msg {
-                let _ = tx.send(text);
-            }
-        }
-    });
-
-    tokio::select! {
-        _ = &mut send_task => recv_task.abort(),
-        _ = &mut recv_task => send_task.abort(),
-    }
 }
