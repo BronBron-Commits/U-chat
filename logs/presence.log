@@ -1,0 +1,1 @@
+./run-all.sh: line 21: ./target/release/presence-service: No such file or directory
