@@ -1,4 +1,5 @@
 U-Chat
+
 A small, modular Rust-based chat system.
 
 Services:
