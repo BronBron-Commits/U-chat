@@ -1,105 +1,128 @@
-use axum::{
-    extract::{
-        ws::{Message, WebSocket},
-        Query, State, WebSocketUpgrade,
-    },
-    http::StatusCode,
-    response::{Response, IntoResponse},
-    routing::get,
-    Router,
-};
-use futures_util::{SinkExt, StreamExt};
-use jsonwebtoken::{decode, DecodingKey, Validation};
-use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::broadcast;
+//! Gateway Service - WebSocket Real-Time Fabric
+//!
+//! This service provides secure WebSocket connections for real-time
+//! bidirectional communication between browser clients and IoT devices.
+//!
+//! # Security Features
+//! - JWT token authentication via Sec-WebSocket-Protocol header
+//! - Origin validation for CSRF protection
+//! - Room-based isolation with broadcast channels
+//! - TLS encryption required in production (wss://)
+//!
+//! # Architecture
+//! - DashMap for lock-free concurrent room management
+//! - Tokio broadcast channels for efficient fan-out messaging
+//! - Automatic resource cleanup on disconnect
 
-#[derive(Clone)]
-struct AppState {
-    tx: broadcast::Sender<String>,
+mod state;
+mod ws_handler;
+
+use axum::{http::Method, routing::get, Router};
+use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
+use tracing::info;
+
+use state::AppState;
+use ws_handler::ws_handler;
+
+/// Server configuration from environment variables.
+struct Config {
+    /// Server bind address
+    bind_addr: String,
+    /// JWT secret for token validation
+    jwt_secret: String,
+    /// Allowed origins for WebSocket connections (comma-separated)
+    allowed_origins: Vec<String>,
 }
 
-#[derive(Deserialize, Debug)]
-struct WsQuery {
-    token: String,
+impl Config {
+    fn from_env() -> Self {
+        let bind_addr =
+            std::env::var("GATEWAY_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:9000".to_string());
+
+        let jwt_secret =
+            std::env::var("JWT_SECRET").unwrap_or_else(|_| "supersecret".to_string());
+
+        let allowed_origins = std::env::var("ALLOWED_ORIGINS")
+            .map(|s| s.split(',').map(|o| o.trim().to_string()).collect())
+            .unwrap_or_else(|_| {
+                // Default: allow localhost for development
+                vec![
+                    "http://localhost:3000".to_string(),
+                    "http://127.0.0.1:3000".to_string(),
+                ]
+            });
+
+        Self {
+            bind_addr,
+            jwt_secret,
+            allowed_origins,
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() {
-    let (tx, _) = broadcast::channel::<String>(100);
-    let state = Arc::new(AppState { tx });
+    // Initialize tracing for structured logging
+    tracing_subscriber_init();
 
+    let config = Config::from_env();
+
+    // Create shared application state
+    let state = Arc::new(AppState::new(
+        config.jwt_secret,
+        config.allowed_origins.clone(),
+    ));
+
+    // Configure CORS for WebSocket handshake
+    // Note: WebSocket connections use GET method for upgrade
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET])
+        .allow_headers(Any)
+        .allow_origin(
+            config
+                .allowed_origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect::<Vec<_>>(),
+        );
+
+    // Build the router with WebSocket endpoint
     let app = Router::new()
         .route("/ws", get(ws_handler))
+        .route("/health", get(health_check))
+        .layer(cors)
         .with_state(state);
 
-    println!("Gateway running on 0.0.0.0:9000");
-
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9000")
-        .await
-        .expect("Failed to bind");
-
-    axum::serve(listener, app).await.unwrap();
-}
-
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<WsQuery>,
-) -> Response {
-
-    // DEBUG: show the raw token the gateway received
-    println!("GATEWAY RECEIVED TOKEN: {}", query.token);
-
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "supersecret".into());
-
-    let mut validation = Validation::default();
-    validation.leeway = 300;
-    validation.validate_exp = true;
-    validation.iss = None;
-    validation.sub = None;
-    validation.aud = None;
-
-    let token_check = decode::<serde_json::Value>(
-        &query.token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
+    info!(
+        bind_addr = config.bind_addr,
+        origins = ?config.allowed_origins,
+        "Gateway service starting"
     );
 
-    if let Err(e) = &token_check {
-        println!("JWT ERROR: {}", e);
-        return (StatusCode::UNAUTHORIZED, "INVALID TOKEN").into_response();
-    }
+    // Start the server
+    let listener = tokio::net::TcpListener::bind(&config.bind_addr)
+        .await
+        .expect("Failed to bind to address");
 
-    println!("TOKEN VERIFIED OK");
+    info!("Gateway service running on {}", config.bind_addr);
 
-    ws.on_upgrade(move |socket| async move {
-        handle_socket(socket, state).await;
-    })
+    axum::serve(listener, app)
+        .await
+        .expect("Server failed to start");
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
-    let (mut sender, mut receiver) = socket.split();
-    let mut rx = state.tx.subscribe();
+/// Health check endpoint for load balancers and monitoring.
+async fn health_check() -> &'static str {
+    "OK"
+}
 
-    let send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if sender.send(Message::Text(msg)).await.is_err() {
-                break;
-            }
-        }
-    });
+/// Initialize tracing subscriber for structured logging.
+fn tracing_subscriber_init() {
+    use tracing_subscriber::{fmt, EnvFilter};
 
-    let state2 = state.clone();
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("gateway_service=info,tower_http=info"));
 
-    let recv_task = tokio::spawn(async move {
-        while let Some(Ok(Message::Text(msg))) = receiver.next().await {
-            let _ = state2.tx.send(msg);
-        }
-    });
-
-    tokio::select! {
-        _ = send_task => {},
-        _ = recv_task => {},
-    }
+    fmt().with_env_filter(filter).init();
 }
