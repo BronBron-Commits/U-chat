@@ -1,105 +1,111 @@
-use axum::{
-    extract::{
-        ws::{Message, WebSocket},
-        Query, State, WebSocketUpgrade,
-    },
-    http::StatusCode,
-    response::{Response, IntoResponse},
-    routing::get,
-    Router,
-};
-use futures_util::{SinkExt, StreamExt};
-use jsonwebtoken::{decode, DecodingKey, Validation};
-use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::net::TcpListener;
+use tokio::sync::{broadcast, mpsc};
+use tokio_tungstenite::accept_async;
 
-#[derive(Clone)]
-struct AppState {
-    tx: broadcast::Sender<String>,
-}
+use futures_util::stream::StreamExt;
+use futures_util::SinkExt;
 
-#[derive(Deserialize, Debug)]
-struct WsQuery {
-    token: String,
-}
+use tungstenite::protocol::Message;
+
+use uchat_proto::events::{ClientEvent, ServerEvent};
+use uchat_proto::jwt::{create_token};
+
+use serde_json;
+use anyhow::Result;
 
 #[tokio::main]
 async fn main() {
-    let (tx, _) = broadcast::channel::<String>(100);
-    let state = Arc::new(AppState { tx });
+    let listener = TcpListener::bind("0.0.0.0:9000").await.unwrap();
 
-    let app = Router::new()
-        .route("/ws", get(ws_handler))
-        .with_state(state);
+    let (tx, _rx) = broadcast::channel::<String>(1024);
 
-    println!("Gateway running on 0.0.0.0:9000");
+    println!("gateway-service listening on ws://0.0.0.0:9000/ws");
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:9000")
-        .await
-        .expect("Failed to bind");
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let tx = tx.clone();
+        let mut rx = tx.subscribe();
 
-    axum::serve(listener, app).await.unwrap();
-}
-
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<WsQuery>,
-) -> Response {
-
-    // DEBUG: show the raw token the gateway received
-    println!("GATEWAY RECEIVED TOKEN: {}", query.token);
-
-    let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "supersecret".into());
-
-    let mut validation = Validation::default();
-    validation.leeway = 300;
-    validation.validate_exp = true;
-    validation.iss = None;
-    validation.sub = None;
-    validation.aud = None;
-
-    let token_check = decode::<serde_json::Value>(
-        &query.token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    );
-
-    if let Err(e) = &token_check {
-        println!("JWT ERROR: {}", e);
-        return (StatusCode::UNAUTHORIZED, "INVALID TOKEN").into_response();
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream, tx, &mut rx).await {
+                eprintln!("connection error: {:?}", e);
+            }
+        });
     }
-
-    println!("TOKEN VERIFIED OK");
-
-    ws.on_upgrade(move |socket| async move {
-        handle_socket(socket, state).await;
-    })
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
-    let (mut sender, mut receiver) = socket.split();
-    let mut rx = state.tx.subscribe();
+async fn handle_connection(
+    stream: tokio::net::TcpStream,
+    tx: broadcast::Sender<String>,
+    rx: &mut broadcast::Receiver<String>,
+) -> Result<()> {
+    let ws_stream = accept_async(stream).await?;
+    let (ws_write, mut ws_read) = ws_stream.split();
 
-    let send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if sender.send(Message::Text(msg)).await.is_err() {
+    let secret = "MY_SECRET_KEY";
+
+    // Writer channel
+    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
+
+    // Writer task (the ONLY task that touches ws_write)
+    let mut ws_write = ws_write;
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = msg_rx.recv().await {
+            if ws_write.send(msg).await.is_err() {
                 break;
             }
         }
     });
 
-    let state2 = state.clone();
-
-    let recv_task = tokio::spawn(async move {
-        while let Some(Ok(Message::Text(msg))) = receiver.next().await {
-            let _ = state2.tx.send(msg);
+    // Broadcast listener task
+    let msg_tx_clone = msg_tx.clone();
+    let mut rx2 = rx.resubscribe();
+    let broadcaster = tokio::spawn(async move {
+        while let Ok(msg) = rx2.recv().await {
+            let event = ServerEvent::MessageBroadcast {
+                from: "user".into(),
+                content: msg,
+            };
+            if let Ok(json) = serde_json::to_string(&event) {
+                let _ = msg_tx_clone.send(Message::Text(json));
+            }
         }
     });
 
-    tokio::select! {
-        _ = send_task => {},
-        _ = recv_task => {},
+    // Reader loop
+    while let Some(msg) = ws_read.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                match serde_json::from_str::<ClientEvent>(&text) {
+                    Ok(event) => match event {
+                        ClientEvent::Login { username, password: _ } => {
+                            let token = create_token(secret, &username);
+                            let reply = ServerEvent::LoginOk { token };
+                            let json = serde_json::to_string(&reply)?;
+                            let _ = msg_tx.send(Message::Text(json));
+                        }
+
+                        ClientEvent::SendMessage { content } => {
+                            let _ = tx.send(content);
+                        }
+                    },
+
+                    Err(_) => {
+                        let err = ServerEvent::Error {
+                            details: "Invalid event".into(),
+                        };
+                        let json = serde_json::to_string(&err)?;
+                        let _ = msg_tx.send(Message::Text(json));
+                    }
+                }
+            }
+
+            Ok(Message::Close(_)) => break,
+            _ => {}
+        }
     }
+
+    writer.abort();
+    broadcaster.abort();
+    Ok(())
 }
