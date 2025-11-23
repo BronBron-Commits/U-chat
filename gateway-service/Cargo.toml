@@ -4,12 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
-tower = "0.5"
-tower-http = "0.5"
+tokio-tungstenite = "0.20"
+tungstenite = "0.20"
+tokio-stream = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-jsonwebtoken = "9.3"
-uuid = "1.8"
+anyhow = "1.0"
 futures-util = "0.3"
+
+# our shared protocol crate
+uchat-proto = { path = "../uchat-proto" }
