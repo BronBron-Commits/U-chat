@@ -1,5 +1,7 @@
 # Development Progress
 
+> **Enterprise Roadmap**: See [ENTERPRISE_ROADMAP.md](./ENTERPRISE_ROADMAP.md) for the complete enterprise readiness plan targeting Signal/Mattermost competition and secure IoT automation.
+
 ## Project Evolution Timeline
 
 | Date | Phase | Description | PR/Commit |
@@ -10,6 +12,48 @@
 | 2024-11 | Phase 3 | WSS Gateway Security | ✅ Complete |
 | 2024-11 | Phase 4 | ESP32 Firmware & WSS Integration | ✅ Complete |
 | 2024-11 | Phase 5 | Rate Limiting & Device Registration | ✅ Complete |
+| 2024-11 | Phase 6 | Enterprise Roadmap Documentation | ✅ Complete |
+
+---
+
+## Enterprise Readiness Assessment
+
+### Current State vs Enterprise Requirements
+
+| Category | Current | Enterprise Target | Gap |
+|----------|---------|------------------|-----|
+| **Encryption** | TLS transport only | E2EE + forward secrecy | 🔴 Major |
+| **Key Management** | Env variables | HSM/KMS (Vault, AWS KMS) | 🔴 Major |
+| **Authentication** | HS256 JWT + password | RS256 + OIDC/SAML + WebAuthn | 🟠 Moderate |
+| **Authorization** | Basic user/device | RBAC/ABAC with policy engine | 🟠 Moderate |
+| **Audit Logging** | File-based | Immutable + SIEM integration | 🟠 Moderate |
+| **Scalability** | Single node (~1k users) | Multi-region (100k users) | 🟠 Moderate |
+| **Compliance** | None | SOC2/HIPAA/GDPR | 🟠 Moderate |
+| **High Availability** | None | 99.99% SLA | 🟡 Minor |
+
+### Production-Ready Components ✅
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Argon2id Password Hashing | ✅ Ready | Exceeds OWASP requirements |
+| WSS Transport Encryption | ✅ Ready | TLS 1.2/1.3 via Sec-WebSocket-Protocol |
+| Rate Limiting | ✅ Ready | Per-IP, per-user, per-connection |
+| Device Management | ✅ Ready | Registration, revocation, audit |
+| ESP32 Firmware | ✅ Ready | Secure WSS with auto-reconnect |
+| ML Sidecar Isolation | ✅ Ready | Process isolation via UDS |
+| Prometheus Metrics | ✅ Ready | Comprehensive observability |
+
+### Enterprise Phases Planned
+
+| Phase | Description | Priority | Status |
+|-------|-------------|----------|--------|
+| 7 | E2E Encryption (Double Ratchet, MLS) | 🔴 Critical | 📋 Planned |
+| 8 | Enterprise Identity (OIDC, SAML, RBAC) | 🔴 Critical | 📋 Planned |
+| 9 | Compliance & Audit (Immutable logs, GDPR) | 🟠 High | 📋 Planned |
+| 10 | Scalability (NATS, Redis, K8s) | 🟠 High | 📋 Planned |
+| 11 | Enterprise Chat Features | 🟡 Medium | 📋 Planned |
+| 12 | Secure Automation (MQTT, OPA) | 🟡 Medium | 📋 Planned |
+| 13 | Go-to-Market Packaging | 🟢 Low | 📋 Planned |
 
 ---
 
