@@ -186,16 +186,27 @@ impl MqttBridge {
         Ok(())
     }
 
-    /// Event loop task (handles MQTT events)
+    /// Event loop task (handles MQTT events with exponential backoff reconnect)
     async fn event_loop_task(
         mut event_loop: EventLoop,
         device_sessions: Arc<DashMap<String, SessionStore>>,
         message_tx: mpsc::UnboundedSender<(String, Vec<u8>)>,
         config: MqttBridgeConfig,
     ) {
+        let mut reconnect_delay = Duration::from_secs(1);
+        let max_reconnect_delay = Duration::from_secs(30);
+        let mut consecutive_errors = 0;
+
         loop {
             match event_loop.poll().await {
                 Ok(event) => {
+                    // Connection successful, reset backoff
+                    if consecutive_errors > 0 {
+                        info!("MQTT connection restored");
+                        reconnect_delay = Duration::from_secs(1);
+                        consecutive_errors = 0;
+                    }
+
                     if let Err(e) = Self::handle_event(
                         event,
                         &device_sessions,
@@ -206,8 +217,22 @@ impl MqttBridge {
                     }
                 }
                 Err(e) => {
-                    error!(error = %e, "MQTT connection error");
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    consecutive_errors += 1;
+                    error!(
+                        error = %e,
+                        consecutive_errors = consecutive_errors,
+                        retry_in_secs = reconnect_delay.as_secs(),
+                        "MQTT connection error, will retry with exponential backoff"
+                    );
+
+                    // Exponential backoff with jitter
+                    tokio::time::sleep(reconnect_delay).await;
+
+                    // Double the delay for next attempt, up to max
+                    reconnect_delay = std::cmp::min(
+                        reconnect_delay * 2,
+                        max_reconnect_delay,
+                    );
                 }
             }
         }

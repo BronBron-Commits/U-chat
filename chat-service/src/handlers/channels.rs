@@ -10,6 +10,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use core::{
+    audit::{self, AuditAction, AuditEvent},
     error::ApiError,
     models::{Channel, ChannelMember, Pagination},
 };
@@ -94,6 +95,14 @@ pub async fn create_channel(
     .execute(&pool)
     .await
     .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+    // Audit log channel creation
+    let audit_event = AuditEvent::new(&creator_id, AuditAction::RoomCreated)
+        .with_service("chat-service")
+        .with_resource("channel", &channel_id)
+        .with_metadata("channel_name", &req.name)
+        .with_metadata("channel_type", &req.channel_type.to_string());
+    let _ = audit::log(audit_event).await;
 
     Ok(Json(ChannelResponse {
         id: channel.id,
