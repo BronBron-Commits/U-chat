@@ -97,33 +97,34 @@ pub fn derive_key(shared_secret: &[u8], salt: &[u8], info: &[u8]) -> [u8; 32] {
     key
 }
 
-/// Derive multiple keys from shared secret
+/// Derive keys for Double Ratchet symmetric-key ratchet step
+///
+/// In the Double Ratchet, each DH ratchet produces a new root key and a chain key.
+/// The chain key is used for either sending or receiving, not both.
 pub struct DerivedKeys {
-    pub sending_key: [u8; 32],
-    pub receiving_key: [u8; 32],
-    pub next_chain_key: [u8; 32],
+    pub chain_key: [u8; 32],
+    pub next_root_key: [u8; 32],
 }
 
 impl DerivedKeys {
     /// Derive keys for a Double Ratchet step
+    ///
+    /// KDF produces (root_key, chain_key) from the previous root key and DH output
     pub fn derive(root_key: &[u8; 32], dh_output: &[u8; 32]) -> Self {
-        let sending_key = derive_key(dh_output, root_key, b"unhidra-e2ee-sending");
-        let receiving_key = derive_key(dh_output, root_key, b"unhidra-e2ee-receiving");
-        let next_chain_key = derive_key(dh_output, root_key, b"unhidra-e2ee-chain");
+        let next_root_key = derive_key(dh_output, root_key, b"unhidra-e2ee-root");
+        let chain_key = derive_key(dh_output, &next_root_key, b"unhidra-e2ee-chain");
 
         Self {
-            sending_key,
-            receiving_key,
-            next_chain_key,
+            chain_key,
+            next_root_key,
         }
     }
 }
 
 impl Zeroize for DerivedKeys {
     fn zeroize(&mut self) {
-        self.sending_key.zeroize();
-        self.receiving_key.zeroize();
-        self.next_chain_key.zeroize();
+        self.chain_key.zeroize();
+        self.next_root_key.zeroize();
     }
 }
 
@@ -221,9 +222,14 @@ mod tests {
 
         let keys = DerivedKeys::derive(&root_key, &dh_output);
 
-        // Keys should be different from each other
-        assert_ne!(keys.sending_key, keys.receiving_key);
-        assert_ne!(keys.sending_key, keys.next_chain_key);
-        assert_ne!(keys.receiving_key, keys.next_chain_key);
+        // Keys should be different from each other and from inputs
+        assert_ne!(keys.chain_key, keys.next_root_key);
+        assert_ne!(keys.chain_key, root_key);
+        assert_ne!(keys.next_root_key, root_key);
+
+        // Derivation should be deterministic
+        let keys2 = DerivedKeys::derive(&root_key, &dh_output);
+        assert_eq!(keys.chain_key, keys2.chain_key);
+        assert_eq!(keys.next_root_key, keys2.next_root_key);
     }
 }

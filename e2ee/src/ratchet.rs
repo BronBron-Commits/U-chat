@@ -52,14 +52,16 @@ impl DoubleRatchet {
         let their_pk = their_public.to_public_key();
         let dh_output = dh_keypair.diffie_hellman(&their_pk);
 
+        // Perform symmetric-key ratchet: derive new root key and chain key
+        // This chain key will be used for sending
         let keys = DerivedKeys::derive(&shared_secret, dh_output.as_bytes());
 
         Self {
             dh_keypair_exported: Some(dh_keypair.export()),
             dh_keypair: Some(dh_keypair),
             their_dh_public: Some(their_public),
-            root_key: keys.next_chain_key,
-            sending_chain_key: Some(keys.sending_key),
+            root_key: keys.next_root_key,
+            sending_chain_key: Some(keys.chain_key),
             receiving_chain_key: None,
             send_count: 0,
             recv_count: 0,
@@ -173,20 +175,20 @@ impl DoubleRatchet {
         // Update their public key
         self.their_dh_public = Some(their_public.clone());
 
-        // Derive receiving chain key
+        // Derive receiving chain key from current DH
         let their_pk = their_public.to_public_key();
         let dh_output = dh_keypair.diffie_hellman(&their_pk);
         let keys = DerivedKeys::derive(&self.root_key, dh_output.as_bytes());
-        self.root_key = keys.next_chain_key;
-        self.receiving_chain_key = Some(keys.receiving_key);
+        self.root_key = keys.next_root_key;
+        self.receiving_chain_key = Some(keys.chain_key);
 
-        // Generate new DH key pair
+        // Generate new DH key pair and derive sending chain key
         let new_keypair = KeyPair::generate();
         let new_dh_output = new_keypair.diffie_hellman(&their_pk);
         let new_keys = DerivedKeys::derive(&self.root_key, new_dh_output.as_bytes());
 
-        self.root_key = new_keys.next_chain_key;
-        self.sending_chain_key = Some(new_keys.sending_key);
+        self.root_key = new_keys.next_root_key;
+        self.sending_chain_key = Some(new_keys.chain_key);
         self.dh_keypair_exported = Some(new_keypair.export());
         self.dh_keypair = Some(new_keypair);
 
@@ -229,7 +231,7 @@ impl DoubleRatchet {
         }
 
         self.receiving_chain_key = Some(chain_key);
-        self.recv_count = 0; // Reset for actual message
+        // recv_count is now at 'until', which is correct for the next message
 
         Ok(())
     }

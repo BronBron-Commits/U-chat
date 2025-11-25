@@ -425,6 +425,171 @@ pub async fn log_message(
 // Re-export async_trait for implementors
 pub use async_trait::async_trait;
 
+/// PostgreSQL audit logger for production use
+#[cfg(feature = "postgres")]
+pub struct PostgresAuditLogger {
+    pool: sqlx::PgPool,
+}
+
+#[cfg(feature = "postgres")]
+impl PostgresAuditLogger {
+    /// Create a new PostgreSQL audit logger
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Create from database URL
+    pub async fn from_url(database_url: &str) -> anyhow::Result<Self> {
+        let pool = sqlx::PgPool::connect(database_url).await?;
+        Ok(Self::new(pool))
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait::async_trait]
+impl AuditLogger for PostgresAuditLogger {
+    async fn log(&self, event: AuditEvent) -> anyhow::Result<()> {
+        let action_str = format!("{}", event.action);
+
+        sqlx::query!(
+            r#"
+            INSERT INTO audit_log (
+                occurred_at, actor_id, actor_type, actor_ip,
+                action, action_result, resource_type, resource_id,
+                service_name, request_id, session_id, metadata
+            ) VALUES ($1, $2, $3::text, $4, $5, $6::text, $7, $8, $9, $10, $11, $12)
+            "#,
+            event.timestamp,
+            event.actor_id.parse::<uuid::Uuid>().ok(),
+            format!("{:?}", event.actor_type).to_lowercase(),
+            event.actor_ip.as_ref().and_then(|ip| ip.parse::<std::net::IpAddr>().ok()),
+            action_str,
+            format!("{:?}", event.result).to_lowercase(),
+            event.resource_type,
+            event.resource_id.as_ref().and_then(|id| id.parse::<uuid::Uuid>().ok()),
+            event.service_name,
+            event.request_id.as_ref().and_then(|id| id.parse::<uuid::Uuid>().ok()),
+            event.session_id.as_ref().and_then(|id| id.parse::<uuid::Uuid>().ok()),
+            serde_json::to_value(&event.metadata)?
+        )
+        .execute(&self.pool)
+        .await?;
+
+        info!(
+            event_id = event.id,
+            actor = event.actor_id,
+            action = %action_str,
+            result = ?event.result,
+            "Audit event logged to PostgreSQL"
+        );
+
+        Ok(())
+    }
+
+    async fn query(&self, filter: AuditFilter) -> anyhow::Result<Vec<AuditEvent>> {
+        // Build dynamic query
+        let mut query = String::from(
+            "SELECT id, occurred_at, actor_id, actor_type, actor_ip, action, action_result, \
+             resource_type, resource_id, service_name, request_id, session_id, metadata \
+             FROM audit_log WHERE 1=1"
+        );
+
+        if filter.actor_id.is_some() {
+            query.push_str(" AND actor_id::text = $1");
+        }
+        if filter.action.is_some() {
+            query.push_str(" AND action = $2");
+        }
+        if filter.resource_type.is_some() {
+            query.push_str(" AND resource_type = $3");
+        }
+        if filter.resource_id.is_some() {
+            query.push_str(" AND resource_id::text = $4");
+        }
+        if filter.from_timestamp.is_some() {
+            query.push_str(" AND occurred_at >= $5");
+        }
+        if filter.to_timestamp.is_some() {
+            query.push_str(" AND occurred_at <= $6");
+        }
+        if filter.result.is_some() {
+            query.push_str(" AND action_result = $7");
+        }
+
+        query.push_str(" ORDER BY occurred_at DESC");
+
+        if let Some(limit) = filter.limit {
+            query.push_str(&format!(" LIMIT {}", limit));
+        }
+        if let Some(offset) = filter.offset {
+            query.push_str(&format!(" OFFSET {}", offset));
+        }
+
+        // For simplicity, using a direct query with manual binding
+        // In production, consider using a query builder library
+        let rows = sqlx::query(&query)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            // Parse row into AuditEvent
+            // Note: This is simplified; proper implementation would parse all fields
+            let event = AuditEvent {
+                id: row.try_get::<i64, _>("id")?.to_string(),
+                timestamp: row.try_get("occurred_at")?,
+                actor_id: row.try_get::<Option<uuid::Uuid>, _>("actor_id")?.map(|u| u.to_string()).unwrap_or_default(),
+                actor_type: parse_actor_type(row.try_get("actor_type")?),
+                actor_ip: row.try_get::<Option<std::net::IpAddr>, _>("actor_ip")?.map(|ip| ip.to_string()),
+                action: parse_audit_action(row.try_get("action")?),
+                result: parse_action_result(row.try_get("action_result")?),
+                resource_type: row.try_get("resource_type")?,
+                resource_id: row.try_get::<Option<uuid::Uuid>, _>("resource_id")?.map(|u| u.to_string()),
+                service_name: row.try_get("service_name")?,
+                request_id: row.try_get::<Option<uuid::Uuid>, _>("request_id")?.map(|u| u.to_string()),
+                session_id: row.try_get::<Option<uuid::Uuid>, _>("session_id")?.map(|u| u.to_string()),
+                metadata: row.try_get::<Option<serde_json::Value>, _>("metadata")?
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default(),
+                signature: None,
+                previous_hash: None,
+            };
+            events.push(event);
+        }
+
+        Ok(events)
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn parse_actor_type(s: &str) -> ActorType {
+    match s {
+        "user" => ActorType::User,
+        "device" => ActorType::Device,
+        "service" => ActorType::Service,
+        "system" => ActorType::System,
+        "anonymous" => ActorType::Anonymous,
+        _ => ActorType::User,
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn parse_action_result(s: &str) -> ActionResult {
+    match s {
+        "success" => ActionResult::Success,
+        "failure" => ActionResult::Failure,
+        "denied" => ActionResult::Denied,
+        "error" => ActionResult::Error,
+        _ => ActionResult::Success,
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn parse_audit_action(s: &str) -> AuditAction {
+    // Simple string-based parsing; in production, consider a more robust approach
+    AuditAction::Custom(s.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
