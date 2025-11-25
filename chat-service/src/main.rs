@@ -51,8 +51,11 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Connected to PostgreSQL database");
 
+    // Initialize file storage config
+    let file_config = handlers::files::FileStorageConfig::from_env();
+
     // Build API router with authentication-required endpoints
-    let api_router = Router::new()
+    let channel_thread_router = Router::new()
         // Channel routes
         .route("/channels", post(handlers::channels::create_channel))
         .route("/channels", get(handlers::channels::list_channels))
@@ -65,12 +68,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/threads/:thread_id/replies", get(handlers::threads::list_thread_replies))
         .route("/threads/:thread_id/participants", post(handlers::threads::add_thread_participant))
         .route("/threads/:thread_id/read", post(handlers::threads::mark_thread_read))
-        // File routes
+        .with_state(pool.clone());
+
+    // File routes with separate state
+    let file_router = Router::new()
         .route("/files", post(handlers::files::upload_file))
         .route("/files/:file_id", get(handlers::files::download_file))
         .route("/files/:file_id", delete(handlers::files::delete_file))
         .route("/channels/:channel_id/files", get(handlers::files::list_channel_files))
-        .with_state(pool.clone());
+        .with_state((pool.clone(), file_config));
+
+    // Merge routers
+    let api_router = channel_thread_router.merge(file_router);
 
     // Main app with health check (no auth required)
     let app = Router::new()

@@ -19,7 +19,11 @@ use sqlx::PgPool;
 use std::io::Write;
 use uuid::Uuid;
 
-use core::error::ApiError;
+use core::{
+    audit::{self, AuditAction, AuditEvent},
+    error::ApiError,
+};
+use e2ee::{DoubleRatchet, EncryptedMessage, SessionStore};
 
 #[cfg(feature = "minio")]
 use s3::{Bucket, creds::Credentials, Region};
@@ -252,6 +256,16 @@ pub async fn upload_file(
     .await
     .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
 
+    // Audit log file upload
+    let audit_event = AuditEvent::new(&user_id, AuditAction::DataModified)
+        .with_service("chat-service")
+        .with_resource("file", &file_record.id)
+        .with_metadata("filename", &original_filename)
+        .with_metadata("file_size", file_data.len())
+        .with_metadata("channel_id", &channel_id)
+        .with_metadata("encrypted", encrypted);
+    let _ = audit::log(audit_event).await;
+
     Ok(Json(FileUploadResponse {
         id: file_record.id.clone(),
         filename: file_record.filename,
@@ -442,6 +456,13 @@ pub async fn delete_file(
     .await
     .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
 
+    // Audit log file deletion
+    let audit_event = AuditEvent::new(&user_id, AuditAction::DataDeleted)
+        .with_service("chat-service")
+        .with_resource("file", &file_id)
+        .with_metadata("channel_id", &file.channel_id);
+    let _ = audit::log(audit_event).await;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -552,4 +573,90 @@ fn sanitize_filename(filename: &str) -> String {
 pub struct Pagination {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+}
+
+// ============================================================================
+// E2EE File Encryption/Decryption
+// ============================================================================
+
+/// Encrypt file data using E2EE ratchet
+///
+/// This function encrypts file data using the Double Ratchet algorithm
+/// for forward secrecy and break-in recovery.
+pub fn encrypt_file_data(
+    ratchet: &mut DoubleRatchet,
+    file_data: &[u8],
+) -> Result<Vec<u8>, ApiError> {
+    let encrypted = ratchet
+        .encrypt(file_data)
+        .map_err(|e| ApiError::InternalError(format!("File encryption failed: {}", e)))?;
+
+    // Serialize encrypted message to JSON bytes
+    let json = encrypted
+        .to_json()
+        .map_err(|e| ApiError::InternalError(format!("Failed to serialize encrypted file: {}", e)))?;
+
+    Ok(json.into_bytes())
+}
+
+/// Decrypt file data using E2EE ratchet
+///
+/// This function decrypts file data that was encrypted with the Double Ratchet.
+pub fn decrypt_file_data(
+    ratchet: &mut DoubleRatchet,
+    encrypted_data: &[u8],
+) -> Result<Vec<u8>, ApiError> {
+    // Parse encrypted message from JSON
+    let json_str = String::from_utf8(encrypted_data.to_vec())
+        .map_err(|e| ApiError::InternalError(format!("Invalid encrypted file format: {}", e)))?;
+
+    let encrypted_msg = EncryptedMessage::from_json(&json_str)
+        .map_err(|e| ApiError::InternalError(format!("Failed to parse encrypted file: {}", e)))?;
+
+    // Decrypt
+    let plaintext = ratchet
+        .decrypt(&encrypted_msg)
+        .map_err(|e| ApiError::InternalError(format!("File decryption failed: {}", e)))?;
+
+    Ok(plaintext)
+}
+
+/// Encrypt file for a specific device using session store
+///
+/// Use this when you have a SessionStore and want to encrypt for a specific device/user.
+pub fn encrypt_file_for_device(
+    session_store: &mut SessionStore,
+    device_id: &str,
+    file_data: &[u8],
+) -> Result<Vec<u8>, ApiError> {
+    let encrypted = session_store
+        .encrypt(device_id, file_data)
+        .map_err(|e| ApiError::InternalError(format!("File encryption for device failed: {}", e)))?;
+
+    let json = encrypted
+        .to_json()
+        .map_err(|e| ApiError::InternalError(format!("Failed to serialize encrypted file: {}", e)))?;
+
+    Ok(json.into_bytes())
+}
+
+/// Decrypt file from a specific device using session store
+///
+/// Use this when you have a SessionStore and want to decrypt from a specific device/user.
+pub fn decrypt_file_from_device(
+    session_store: &mut SessionStore,
+    device_id: &str,
+    encrypted_data: &[u8],
+) -> Result<Vec<u8>, ApiError> {
+    let json_str = String::from_utf8(encrypted_data.to_vec())
+        .map_err(|e| ApiError::InternalError(format!("Invalid encrypted file format: {}", e)))?;
+
+    let encrypted_msg = EncryptedMessage::from_json(&json_str)
+        .map_err(|e| ApiError::InternalError(format!("Failed to parse encrypted file: {}", e)))?;
+
+    let plaintext = session_store
+        .decrypt(device_id, &encrypted_msg)
+        .map_err(|e| ApiError::InternalError(format!("File decryption from device failed: {}", e)))?;
+
+    Ok(plaintext)
 }

@@ -1,0 +1,408 @@
+# Production values for unhidra.
+# Override default values for production deployment.
+# Usage: helm install unhidra ./unhidra -f values-prod.yaml
+
+# Global settings for production
+global:
+  imageRegistry: "ghcr.io/yourusername"
+  imagePullSecrets:
+    - name: github-registry-secret
+  storageClass: "standard-rwo"
+
+# Common labels for production environment
+commonLabels:
+  environment: "production"
+  managed-by: "helm"
+  app.kubernetes.io/part-of: "unhidra"
+
+# Common annotations
+commonAnnotations:
+  prometheus.io/scrape: "true"
+
+# ============================================================================
+# Auth API Configuration (Production)
+# ============================================================================
+authApi:
+  enabled: true
+  replicaCount: 3
+
+  image:
+    repository: ghcr.io/yourusername/unhidra-auth-api
+    tag: "0.3.0"
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 9200
+
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+  # Horizontal Pod Autoscaler (enabled for production)
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  # Pod disruption budget (critical for production)
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+  # Environment variables
+  env:
+    AUTH_BIND_ADDR: "0.0.0.0:9200"
+    RUST_LOG: "info,auth_api=debug"
+    ARGON2_M_COST: "65536"  # 64 MB
+    ARGON2_T_COST: "3"
+    ARGON2_P_COST: "4"
+
+  # Use existing secrets for production
+  existingSecret: "unhidra-auth-secrets"
+
+  # OIDC SSO Configuration (enabled for production)
+  oidc:
+    enabled: true
+    # Secrets: OIDC_OKTA_ISSUER_URL, OIDC_OKTA_CLIENT_ID, OIDC_OKTA_CLIENT_SECRET
+
+  # WebAuthn Configuration
+  webauthn:
+    rpId: "app.unhidra.com"
+    rpName: "Unhidra Production"
+    rpOrigin: "https://app.unhidra.com"
+
+# ============================================================================
+# Gateway Service Configuration (Production)
+# ============================================================================
+gatewayService:
+  enabled: true
+  replicaCount: 5
+
+  image:
+    repository: ghcr.io/yourusername/unhidra-gateway
+    tag: "0.3.0"
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 9000
+
+  resources:
+    limits:
+      cpu: 4000m
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 5
+    maxReplicas: 50
+    targetCPUUtilizationPercentage: 65
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 3
+
+  env:
+    GATEWAY_BIND_ADDR: "0.0.0.0:9000"
+    RUST_LOG: "info,gateway_service=debug"
+    WS_MAX_CONNECTIONS: "100000"
+    WS_PING_INTERVAL: "30"
+
+  # MQTT Bridge Configuration
+  mqtt:
+    enabled: true
+    brokerUrl: "mqtts://mqtt.unhidra.com:8883"
+    tlsEnabled: true
+    reconnectIntervalSecs: "5"
+
+# ============================================================================
+# Chat Service Configuration (Production)
+# ============================================================================
+chatService:
+  enabled: true
+  replicaCount: 4
+
+  image:
+    repository: ghcr.io/yourusername/unhidra-chat-service
+    tag: "0.3.0"
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 9100
+
+  resources:
+    limits:
+      cpu: 3000m
+      memory: 3Gi
+    requests:
+      cpu: 750m
+      memory: 768Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 4
+    maxReplicas: 30
+    targetCPUUtilizationPercentage: 70
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+  env:
+    RUST_LOG: "info,chat_service=debug"
+
+# ============================================================================
+# Presence Service Configuration (Production)
+# ============================================================================
+presenceService:
+  enabled: true
+  replicaCount: 3
+
+  image:
+    repository: ghcr.io/yourusername/unhidra-presence-service
+    tag: "0.3.0"
+    pullPolicy: Always
+
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 250m
+      memory: 256Mi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 15
+
+# ============================================================================
+# History Service Configuration (Production)
+# ============================================================================
+historyService:
+  enabled: true
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/yourusername/unhidra-history-service
+    tag: "0.3.0"
+    pullPolicy: Always
+
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+# ============================================================================
+# PostgreSQL Configuration (Production)
+# ============================================================================
+postgresql:
+  enabled: true
+  auth:
+    existingSecret: "unhidra-postgres-secret"
+    secretKeys:
+      adminPasswordKey: "postgres-password"
+      userPasswordKey: "password"
+      replicationPasswordKey: "replication-password"
+
+  primary:
+    resources:
+      limits:
+        cpu: 4000m
+        memory: 8Gi
+      requests:
+        cpu: 1000m
+        memory: 2Gi
+
+    persistence:
+      enabled: true
+      storageClass: "standard-rwo"
+      size: 100Gi
+
+  # Read replicas for production
+  readReplicas:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+  # Backup configuration
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"  # 2 AM daily
+    retention: 30
+
+# ============================================================================
+# Redis Configuration (Production)
+# ============================================================================
+redis:
+  enabled: true
+  architecture: "replication"
+  auth:
+    enabled: true
+    existingSecret: "unhidra-redis-secret"
+    existingSecretPasswordKey: "redis-password"
+
+  master:
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+    persistence:
+      enabled: true
+      storageClass: "standard-rwo"
+      size: 20Gi
+
+  replica:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+
+# ============================================================================
+# MinIO Configuration (Production)
+# ============================================================================
+minio:
+  enabled: true
+  mode: "distributed"
+  replicas: 4
+
+  auth:
+    existingSecret: "unhidra-minio-secret"
+
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  persistence:
+    enabled: true
+    storageClass: "standard-rwo"
+    size: 500Gi
+
+  # S3-compatible endpoint
+  ingress:
+    enabled: true
+    hostname: "s3.unhidra.com"
+    tls: true
+    certManager: true
+
+# ============================================================================
+# Ingress Configuration (Production)
+# ============================================================================
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+  hosts:
+    - host: app.unhidra.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+  tls:
+    - secretName: unhidra-tls
+      hosts:
+        - app.unhidra.com
+
+# ============================================================================
+# Monitoring Configuration (Production)
+# ============================================================================
+monitoring:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+
+  grafana:
+    enabled: true
+    ingress:
+      enabled: true
+      hostname: "grafana.unhidra.com"
+
+# ============================================================================
+# Security Configuration (Production)
+# ============================================================================
+security:
+  # Network policies
+  networkPolicy:
+    enabled: true
+
+  # Pod security policies
+  podSecurityPolicy:
+    enabled: true
+
+  # Service mesh (optional)
+  serviceMesh:
+    enabled: false
+    provider: "istio"
+
+# ============================================================================
+# Audit Logging (Production)
+# ============================================================================
+audit:
+  enabled: true
+  backend: "postgres"
+  retention: 90  # days
+
+# ============================================================================
+# E2EE Configuration (Production)
+# ============================================================================
+e2ee:
+  enabled: true
+  keyRotationDays: 30
+
+# ============================================================================
+# Backup and Disaster Recovery
+# ============================================================================
+backup:
+  enabled: true
+  schedule: "0 1 * * *"  # 1 AM daily
+  retention: 30
+  storageClass: "standard-rwo"
+  size: 200Gi
+
+# ============================================================================
+# High Availability Configuration
+# ============================================================================
+highAvailability:
+  enabled: true
+  multiZone: true
+  zones:
+    - us-central1-a
+    - us-central1-b
+    - us-central1-c

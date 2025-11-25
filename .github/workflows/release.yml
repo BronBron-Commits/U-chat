@@ -19,6 +19,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Run tests
+        run: cargo test --workspace --release
+        env:
+          RUST_BACKTRACE: 1
+
       - name: Build release binaries
         run: cargo build --workspace --release
 

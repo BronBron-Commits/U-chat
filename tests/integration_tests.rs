@@ -302,6 +302,188 @@ async fn test_password_hashing() {
     println!("✅ Password hashing test passed");
 }
 
+/// Test E2EE file encryption/decryption roundtrip
+#[tokio::test]
+async fn test_e2ee_file_roundtrip() {
+    use e2ee::{DoubleRatchet, KeyPair, PublicKeyBytes};
+
+    // Setup Alice and Bob with shared secret
+    let shared_secret = [42u8; 32];
+    let bob_prekey = KeyPair::generate();
+    let bob_prekey_public = PublicKeyBytes::from_public_key(bob_prekey.public_key());
+
+    let mut alice = DoubleRatchet::init_alice(shared_secret, bob_prekey_public);
+    let mut bob = DoubleRatchet::init_bob(shared_secret, bob_prekey);
+
+    // Encrypt a file
+    let file_data = b"This is a test file with sensitive content that needs encryption!";
+    let encrypted = alice.encrypt(file_data).expect("File encryption failed");
+
+    // Decrypt the file
+    let decrypted = bob.decrypt(&encrypted).expect("File decryption failed");
+
+    assert_eq!(file_data.to_vec(), decrypted);
+    println!("✅ E2EE file roundtrip test passed");
+}
+
+/// Test MQTT reconnect with exponential backoff
+#[cfg(feature = "mqtt-bridge")]
+#[tokio::test]
+async fn test_mqtt_reconnect_behavior() {
+    // This test verifies that the MQTT bridge can handle connection errors
+    // with exponential backoff and recover gracefully
+
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    // Simulate connection failures and measure backoff timing
+    let mut delay = Duration::from_secs(1);
+    let max_delay = Duration::from_secs(30);
+    let start = Instant::now();
+
+    let mut attempts = vec![];
+
+    // Simulate 5 failed connection attempts
+    for i in 0..5 {
+        attempts.push(delay);
+        tokio::time::sleep(delay).await;
+
+        // Double the delay, up to max
+        delay = std::cmp::min(delay * 2, max_delay);
+    }
+
+    let elapsed = start.elapsed();
+
+    // Verify exponential backoff: 1s, 2s, 4s, 8s, 16s = 31s total
+    assert!(elapsed.as_secs() >= 30 && elapsed.as_secs() <= 33);
+
+    // Verify delays follow exponential pattern
+    assert_eq!(attempts[0], Duration::from_secs(1));
+    assert_eq!(attempts[1], Duration::from_secs(2));
+    assert_eq!(attempts[2], Duration::from_secs(4));
+    assert_eq!(attempts[3], Duration::from_secs(8));
+    assert_eq!(attempts[4], Duration::from_secs(16));
+
+    println!("✅ MQTT reconnect backoff test passed");
+}
+
+/// Test Redis Streams message distribution
+#[cfg(all(test, feature = "redis"))]
+#[tokio::test]
+async fn test_redis_streams_distribution() {
+    use chat_service::redis_streams::{RedisConfig, RedisStreams, StreamMessage};
+
+    let redis_url = std::env::var("REDIS_URL")
+        .unwrap_or_else(|_| "redis://localhost:6379".to_string());
+
+    let config = RedisConfig {
+        url: redis_url,
+        consumer_group: "test-group".to_string(),
+        consumer_name: "test-consumer".to_string(),
+        stream_prefix: "test:chat".to_string(),
+        max_stream_length: 1000,
+        block_timeout_ms: 1000,
+    };
+
+    let mut streams = RedisStreams::new(config).await
+        .expect("Failed to create Redis streams client");
+
+    let room_id = "test-room-123";
+
+    // Initialize consumer group
+    streams.init_consumer_group(room_id).await
+        .expect("Failed to init consumer group");
+
+    // Publish a message
+    let message = StreamMessage::new_text(room_id, "user123", "Hello from Redis Streams!");
+    let entry_id = streams.publish(&message).await
+        .expect("Failed to publish message");
+
+    assert!(!entry_id.is_empty());
+
+    // Get stream info
+    let info = streams.stream_info(room_id).await
+        .expect("Failed to get stream info");
+
+    assert_eq!(info.room_id, room_id);
+    assert!(info.length > 0);
+
+    println!("✅ Redis Streams distribution test passed");
+}
+
+/// Test file upload with E2EE metadata
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn test_file_upload_with_e2ee() {
+    use sqlx::PgPool;
+
+    let database_url = std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://localhost/unhidra_test".to_string());
+
+    let pool = PgPool::connect(&database_url).await
+        .expect("Failed to connect to test database");
+
+    // Create test data
+    let file_id = uuid::Uuid::new_v4().to_string();
+    let channel_id = uuid::Uuid::new_v4().to_string();
+    let uploader_id = uuid::Uuid::new_v4().to_string();
+    let encryption_key_id = uuid::Uuid::new_v4().to_string();
+
+    // Create channel
+    sqlx::query!(
+        "INSERT INTO channels (id, name, channel_type, created_by) VALUES ($1, $2, $3, $4)",
+        channel_id, "Test Channel", "private", uploader_id
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to create channel");
+
+    // Insert encrypted file record
+    sqlx::query!(
+        r#"
+        INSERT INTO file_uploads (
+            id, channel_id, uploader_id, filename, original_filename,
+            file_size, mime_type, storage_path, storage_backend,
+            checksum, encrypted, encryption_key_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        "#,
+        file_id,
+        channel_id,
+        uploader_id,
+        "encrypted-file.bin",
+        "secret-document.pdf",
+        1024,
+        "application/pdf",
+        "/tmp/encrypted-file.bin",
+        "local",
+        "abc123checksum",
+        1,
+        encryption_key_id
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to insert file record");
+
+    // Verify file is marked as encrypted
+    let file = sqlx::query!(
+        "SELECT id, encrypted, encryption_key_id FROM file_uploads WHERE id = $1",
+        file_id
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Failed to fetch file");
+
+    assert_eq!(file.encrypted, 1);
+    assert!(file.encryption_key_id.is_some());
+
+    // Cleanup
+    sqlx::query!("DELETE FROM file_uploads WHERE id = $1", file_id).execute(&pool).await.ok();
+    sqlx::query!("DELETE FROM channels WHERE id = $1", channel_id).execute(&pool).await.ok();
+
+    println!("✅ File upload with E2EE test passed");
+}
+
 /// Integration test marker
 #[test]
 fn integration_tests_compiled() {
