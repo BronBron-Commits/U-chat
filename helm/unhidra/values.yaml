@@ -190,6 +190,62 @@ historyService:
       memory: 128Mi
 
 # ============================================================================
+# Bot Service Configuration
+# ============================================================================
+botService:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: unhidra/bot-service
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# ============================================================================
+# MQTT Bridge Configuration (for IoT devices)
+# ============================================================================
+mqttBridge:
+  enabled: false  # Enable for IoT device support
+  replicaCount: 1
+
+  image:
+    repository: unhidra/mqtt-bridge
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 1883  # MQTT port
+    tlsPort: 8883  # MQTTS port
+
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # MQTT broker configuration
+  broker:
+    url: "mqtt://mosquitto:1883"
+    tlsEnabled: true
+    clientIdPrefix: "unhidra-bridge"
+
+  # ESP32 device authentication
+  deviceAuth:
+    enabled: true
+    certPath: "/etc/certs/device-ca.crt"
+
+# ============================================================================
 # E2EE Configuration
 # ============================================================================
 e2ee:
@@ -197,6 +253,8 @@ e2ee:
   enforced: true
   # Protocol version
   protocolVersion: 1
+  # Session refresh interval (days)
+  sessionRefreshDays: 30
 
 # ============================================================================
 # Security Configuration
@@ -221,6 +279,16 @@ security:
   networkPolicies:
     enabled: true
 
+  # Audit logging
+  auditLog:
+    enabled: true
+    # Backend: memory, postgres
+    backend: postgres
+    # Retention period (days)
+    retentionDays: 90
+    # Log to stdout for centralized logging
+    stdout: true
+
 # ============================================================================
 # PostgreSQL Configuration (via Bitnami chart)
 # ============================================================================
@@ -236,12 +304,55 @@ postgresql:
       enabled: true
       size: 10Gi
 
+    # Init scripts (run migrations on startup)
+    initdb:
+      scripts:
+        01-migrations.sh: |
+          #!/bin/bash
+          set -e
+          echo "Running database migrations..."
+          # Migrations will be applied by init job
+
+  # Resource limits for production
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+
+# ============================================================================
+# Database Migrations Job
+# ============================================================================
+migrations:
+  enabled: true
+  image:
+    repository: unhidra/migrations
+    tag: "latest"
+    pullPolicy: Always
+
+  # Run as Kubernetes Job on install/upgrade
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
 # ============================================================================
 # Redis Configuration (via Bitnami chart)
 # ============================================================================
 redis:
   enabled: true
-  architecture: standalone
+  # For production, use replication for HA
+  architecture: replication  # or "standalone" for dev
 
   auth:
     enabled: true
@@ -251,6 +362,35 @@ redis:
     persistence:
       enabled: true
       size: 5Gi
+
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+
+  replica:
+    replicaCount: 2
+    persistence:
+      enabled: true
+      size: 5Gi
+
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+      requests:
+        cpu: 250m
+        memory: 256Mi
+
+  # Redis Streams configuration for chat
+  commonConfiguration: |-
+    maxmemory-policy allkeys-lru
+    save ""
+    appendonly yes
+    appendfsync everysec
 
 # ============================================================================
 # Ingress Configuration
